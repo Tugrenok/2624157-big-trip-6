@@ -1,8 +1,7 @@
 import FilterView from '../view/filter-view.js';
 import SortView from '../view/sort-view.js';
-import EventView from '../view/event-view.js';
-import EventEditView from '../view/event-edit-view.js';
 import EmptyEventsView from '../view/empty-events-view.js';
+import EventPresenter from './event-presenter.js';
 import { EventType } from '../const.js';
 import { render, replace, remove } from '../framework/render.js';
 
@@ -29,9 +28,7 @@ export default class TripPresenter {
   #filterView = null;
   #sortView = null;
   #emptyView = null;
-  #eventComponents = new Map();
-  #currentEditComponent = null;
-  #currentEventId = null;
+  #eventPresenters = new Map();
   #currentFilter = 'everything';
   #currentSort = SortType.DAY;
 
@@ -98,7 +95,6 @@ export default class TripPresenter {
     this.#clearEventsList();
 
     let events = this.#eventsModel.getFilteredEvents(this.#currentFilter);
-
     events = this.#sortEvents(events);
 
     const destinations = this.#eventsModel.getDestinations();
@@ -145,90 +141,33 @@ export default class TripPresenter {
   }
 
   #clearEventsList() {
-    this.#eventComponents.forEach((components) => {
-      remove(components.event);
-      if (components.edit) {
-        remove(components.edit);
-      }
+    this.#eventPresenters.forEach((presenter) => {
+      presenter.destroy();
     });
-    this.#eventComponents.clear();
+    this.#eventPresenters.clear();
 
     if (this.#emptyView) {
       remove(this.#emptyView);
       this.#emptyView = null;
     }
-
-    if (this.#currentEditComponent) {
-      document.removeEventListener('keydown', this.#escKeyDownHandler);
-      this.#currentEditComponent = null;
-    }
   }
 
   #renderEvent(event, destinations, offers) {
-    const eventComponent = new EventView(event, destinations, offers);
-    const editComponent = new EventEditView(event, destinations, offers, false);
-
-    eventComponent.setEditClickHandler(() => {
-      this.#replaceEventToEdit(eventComponent, editComponent, event.id);
+    const eventPresenter = new EventPresenter({
+      container: this.#container,
+      onDataChange: this.#handleEventChange.bind(this),
+      onModeChange: this.#handleModeChange.bind(this)
     });
 
-    eventComponent.setFavoriteClickHandler(() => {
-      console.log('Favorite clicked for event', event.id);
-    });
-
-    editComponent.setFormSubmitHandler((state) => {
-      const updatedEvent = {
-        ...event,
-        type: state.type,
-        destination: state.destinationId,
-        dateFrom: state.dateFrom,
-        dateTo: state.dateTo,
-        basePrice: state.basePrice,
-        offers: state.selectedOffers
-      };
-      this.#eventsModel.updateEvent(updatedEvent);
-      this.#replaceEditToEvent(editComponent, eventComponent);
-    });
-
-    editComponent.setRollupClickHandler(() => {
-      this.#replaceEditToEvent(editComponent, eventComponent);
-    });
-
-    editComponent.setDeleteClickHandler(() => {
-      this.#eventsModel.deleteEvent(event.id);
-    });
-
-    editComponent.setTypeChangeHandler((type) => {
-      console.log('Type changed to', type);
-    });
-
-    editComponent.setDestinationChangeHandler((destinationId) => {
-      console.log('Destination changed to', destinationId);
-    });
-
-    editComponent.setPriceChangeHandler((price) => {
-      console.log('Price changed to', price);
-    });
-
-    editComponent.setDateChangeHandler((dateFrom, dateTo) => {
-      console.log('Dates changed', dateFrom, dateTo);
-    });
-
-    editComponent.setOfferChangeHandler((selectedOffers) => {
-      console.log('Offers changed', selectedOffers);
-    });
-
-    render(eventComponent, this.#container);
-    this.#eventComponents.set(event.id, {
-      event: eventComponent,
-      edit: editComponent
-    });
+    eventPresenter.init(event, destinations, offers);
+    this.#eventPresenters.set(event.id, eventPresenter);
   }
 
   #renderNewEvent(event, destinations, offers) {
-    const newEventComponent = new EventEditView(event, destinations, offers, true);
+    // Для нового события используем временный подход
+    const editComponent = new EventEditView(event, destinations, offers, true);
 
-    newEventComponent.setFormSubmitHandler((state) => {
+    editComponent.setFormSubmitHandler((state) => {
       const newEventData = {
         ...event,
         type: state.type,
@@ -239,36 +178,32 @@ export default class TripPresenter {
         offers: state.selectedOffers
       };
       this.#eventsModel.addEvent(newEventData);
-      remove(newEventComponent);
-      this.#currentEditComponent = null;
+      remove(editComponent);
     });
 
-    newEventComponent.setRollupClickHandler(() => {
-      remove(newEventComponent);
-      this.#currentEditComponent = null;
+    editComponent.setRollupClickHandler(() => {
+      remove(editComponent);
     });
 
-    newEventComponent.setDeleteClickHandler(() => {
-      remove(newEventComponent);
-      this.#currentEditComponent = null;
+    editComponent.setDeleteClickHandler(() => {
+      remove(editComponent);
     });
 
-    render(newEventComponent, this.#container);
-    this.#currentEditComponent = newEventComponent;
+    render(editComponent, this.#container);
   }
 
-  #replaceEventToEdit(eventComponent, editComponent, eventId) {
-    replace(editComponent, eventComponent);
-    this.#currentEventId = eventId;
-    this.#currentEditComponent = editComponent;
-    document.addEventListener('keydown', this.#escKeyDownHandler);
+  #handleEventChange(updatedEvent, isDelete = false) {
+    if (isDelete) {
+      this.#eventsModel.deleteEvent(updatedEvent.id);
+    } else {
+      this.#eventsModel.updateEvent(updatedEvent);
+    }
   }
 
-  #replaceEditToEvent(editComponent, eventComponent) {
-    replace(eventComponent, editComponent);
-    this.#currentEventId = null;
-    this.#currentEditComponent = null;
-    document.removeEventListener('keydown', this.#escKeyDownHandler);
+  #handleModeChange() {
+    this.#eventPresenters.forEach((presenter) => {
+      presenter.resetView();
+    });
   }
 
   #handleFilterChange(filterType) {
@@ -300,14 +235,4 @@ export default class TripPresenter {
     this.#currentSort = sortType;
     this.#renderEvents();
   }
-
-  #escKeyDownHandler = (evt) => {
-    if (evt.key === 'Escape' && this.#currentEditComponent && this.#currentEventId) {
-      evt.preventDefault();
-      const components = this.#eventComponents.get(this.#currentEventId);
-      if (components) {
-        this.#replaceEditToEvent(this.#currentEditComponent, components.event);
-      }
-    }
-  };
 }
